@@ -1,6 +1,13 @@
 CC=gcc
 CFLAGS=-Wall -I.
-LDFLAGS=-lpthread -lrt
+LDFLAGS=-lpthread
+
+UNAME := $(shell uname)
+ifeq ($(UNAME), Darwin)
+	CFLAGS += -DNORT
+else
+	LDFLAGS += -lrt
+endif
 
 EXE = client
 
