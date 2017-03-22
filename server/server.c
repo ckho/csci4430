@@ -73,6 +73,7 @@ int main(int argc, char **argv){
 		// Write the file
 		write(file_fd, buf, read_rtn);
 	}
+	printf("exit\n");
 
 	// Close the mTCP connection
 	mtcp_close(sock_fd);

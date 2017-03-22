@@ -34,9 +34,8 @@ static int connection_state = 0;
 //0: Three-way handshake
 //1: Data transmission
 //2: Four-way handshake
+//3: Closed
 
-//Debug
-static int debug = 1;
 
 /* The Sending Thread and Receive Thread Function */
 static void *send_thread();
@@ -59,6 +58,7 @@ void mtcp_accept(int socket_fd, struct sockaddr_in *client_addr){
   struct thread_args *args = malloc(sizeof(struct thread_args));
   args->socket_fd = socket_fd;
   args->client_addr = client_addr;
+  // global_client_addr = client_addr
 
   //Create send and receive thread
   pthread_create(&send_thread_pid,NULL,send_thread,(void *)args);
@@ -72,17 +72,25 @@ void mtcp_accept(int socket_fd, struct sockaddr_in *client_addr){
   if (sendto_error == 1) {
     pthread_join(send_thread_pid, NULL);
     pthread_join(recv_thread_pid, NULL);
-    printf("Send to error\n");
   }
 
   return;
 }
 
 int mtcp_read(int socket_fd, unsigned char *buf, int buf_len){
+
+  if ((connection_state == 2) || (connection_state == 3)) {
+    return -1;
+  }
+
   //Application thread sleep
   pthread_mutex_lock(&app_thread_sig_mutex);
   pthread_cond_wait(&app_thread_sig,&app_thread_sig_mutex);
   pthread_mutex_unlock(&app_thread_sig_mutex);
+
+  if ((connection_state == 2) || (connection_state == 3)) {
+    return -1;
+  }
 
   if(packet_size-4 < 1000){ //Size of data in buffer < 1000
     pthread_mutex_lock(&info_mutex);
@@ -98,9 +106,13 @@ int mtcp_read(int socket_fd, unsigned char *buf, int buf_len){
     pthread_mutex_unlock(&info_mutex);
     return buf_len;
   }
+
 }
 
 void mtcp_close(int socket_fd){
+  if (connection_state == 3) {
+    return;
+  }
   //Application thread sleep
   pthread_mutex_lock(&app_thread_sig_mutex);
   pthread_cond_wait(&app_thread_sig,&app_thread_sig_mutex);
@@ -117,7 +129,6 @@ static void *send_thread(void *argp){
   struct thread_args *args = argp;
 
   int socket_fd = args->socket_fd;
-  struct sockaddr_in client_addr = global_client_addr;
   unsigned int addrlen = sizeof(struct sockaddr_in);
 
   int state = -1;
@@ -131,6 +142,9 @@ static void *send_thread(void *argp){
     pthread_mutex_unlock(&send_thread_sig_mutex);
 
     pthread_mutex_lock(&info_mutex);
+    if (connection_state == 3) {
+      return 0;
+    }
     //Retrieve global variables
     seq = sequence_number;
     if(connection_state > -1 && connection_state < 3){
@@ -155,19 +169,8 @@ static void *send_thread(void *argp){
         memcpy(&buffer,&seq,4);
         buffer[0] = buffer[0] | (mode << 4);
 
-        //Debug
-        if (debug == 1) {
-          printf("send SYN-ACK\n");
-          printf("%d\n", seq);
-          printf("hashedChars: ");
-          int i;
-          for (i = 0; i < 4; i++) {
-             printf("%x", buffer[i]);
-          }
-          printf("\n");
-        }
 
-        if (sendto(socket_fd, buffer, sizeof(buffer), 0, (struct sockaddr *) &client_addr, addrlen) < 0) {
+        if (sendto(socket_fd, buffer, sizeof(buffer), 0, (struct sockaddr *) &global_client_addr, addrlen) < 0) {
           sendto_error = 1;
           printf("Error sending msg: %s\n", strerror(errno));
           printf("Send error\n");
@@ -209,20 +212,8 @@ static void *send_thread(void *argp){
       memcpy(buffer,&seq,4);
       buffer[0] = buffer[0] | (mode << 4);
 
-      //Debug
-      if (debug == 1) {
-        printf("send ACK\n");
-        printf("%d\n", seq);
-        printf("hashedChars: ");
-        int i;
-        for (i = 0; i < 4; i++) {
-           printf("%x", buffer[i]);
-        }
-        printf("\n");
-      }
 
-
-      if (sendto(socket_fd, buffer, sizeof(buffer), 0, (struct sockaddr *) &client_addr, addrlen) < 0) {
+      if (sendto(socket_fd, buffer, sizeof(buffer), 0, (struct sockaddr *) &global_client_addr, addrlen) < 0) {
         sendto_error = 1;
         printf("Send error\n");
         exit(1);
@@ -249,20 +240,8 @@ static void *send_thread(void *argp){
         memcpy(buffer,&seq,4);
         buffer[0] = buffer[0] | (mode << 4);
 
-        //Debug
-        if (debug == 1) {
-          printf("send FIN-ACK\n");
-          printf("%d\n", seq);
-          printf("hashedChars: ");
-          int i;
-          for (i = 0; i < 4; i++) {
-             printf("%x", buffer[i]);
-          }
-          printf("\n");
-        }
 
-
-        if (sendto(socket_fd, buffer, sizeof(buffer), 0, (struct sockaddr *) &client_addr, addrlen) < 0) {
+        if (sendto(socket_fd, buffer, sizeof(buffer), 0, (struct sockaddr *) &global_client_addr, addrlen) < 0) {
               sendto_error = 1;
               printf("Send error\n");
               exit(1);
@@ -276,9 +255,19 @@ static void *send_thread(void *argp){
         pthread_mutex_lock(&app_thread_sig_mutex);
         pthread_cond_signal(&app_thread_sig);
         pthread_mutex_unlock(&app_thread_sig_mutex);
+        //Sending thread sleep
+        pthread_mutex_lock(&send_thread_sig_mutex);
+        pthread_cond_wait(&send_thread_sig,&send_thread_sig_mutex);
+        pthread_mutex_unlock(&send_thread_sig_mutex);
+        if ((connection_state == 2) || (connection_state == 3)) {
+          return 0;
+        }
       } else if(last_packet == 4) {
         pthread_mutex_lock(&info_mutex);
         last_packet_received = 4;
+        if ((connection_state == 2) || (connection_state == 3)) {
+          return 0;
+        }
         pthread_mutex_unlock(&info_mutex);
         //Wake up application thread
         pthread_mutex_lock(&app_thread_sig_mutex);
@@ -304,14 +293,9 @@ static void *receive_thread(void *argp) {
       unsigned char buffer[1000+4];
 
       //Monitor for packet
-      packet_size = recvfrom(socket_fd,buffer,sizeof(buffer),0,(struct sockaddr*) &client_addr,&addrlen);
+      packet_size = recvfrom(socket_fd,buffer,sizeof(buffer),0,(struct sockaddr*) &global_client_addr,&addrlen);
 
-      global_client_addr = &client_addr;
-
-      if(packet_size < 0){
-        printf("Receive error");
-        exit(1);
-      }
+      memcpy(client_addr, &global_client_addr, addrlen);
 
       //Extract mtcp header
       mode = buffer[0] >> 4;
@@ -319,18 +303,6 @@ static void *receive_thread(void *argp) {
       memcpy(&seq,buffer,4);
       seq = ntohl(seq);
 
-      //Debug
-      if (debug == 1) {
-        printf("receive packet\n");
-        printf("%d\n", seq);
-        printf("%d\n", mode);
-        printf("hashedChars: ");
-        int i;
-        for (i = 0; i < sizeof(buffer); i++) {
-           printf("%x", buffer[i]);
-        }
-        printf("\n");
-      }
 
       switch(mode){
         //SYN
@@ -363,6 +335,18 @@ static void *receive_thread(void *argp) {
           //Update info
           pthread_mutex_lock(&info_mutex);
           last_packet_received = 4;
+          if (connection_state == 2) {
+            //Wake up sending thread
+            pthread_mutex_lock(&app_thread_sig_mutex);
+            pthread_cond_signal(&app_thread_sig);
+            pthread_mutex_unlock(&app_thread_sig_mutex);
+            connection_state = 3;
+            pthread_mutex_lock(&send_thread_sig_mutex);
+            pthread_cond_signal(&send_thread_sig);
+            pthread_mutex_unlock(&send_thread_sig_mutex);
+            return 0;
+          }
+          if (connection_state == 0) connection_state = 1;
           pthread_mutex_unlock(&info_mutex);
           //Wake up sending thread
           pthread_mutex_lock(&send_thread_sig_mutex);
@@ -386,13 +370,6 @@ static void *receive_thread(void *argp) {
           break;
         default:
           printf("Receive error\n");
-      }
-
-      if(connection_state == 2){
-        if(last_packet_received == 4){
-          //Connection close
-          break;
-        }
       }
   }
 

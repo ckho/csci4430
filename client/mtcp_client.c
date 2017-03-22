@@ -50,9 +50,8 @@ static int send_buf_pointer = 0;
 static int current_len_sent = 0;
 static int sendto_error = 0;
 static int timeout = 0;
+static int to_disconnet = 0;
 
-//Debug
-static int debug = 1;
 
 /* The Sending Thread and Receive Thread Function */
 static void *send_thread();
@@ -114,7 +113,7 @@ int mtcp_write(int socket_fd, unsigned char *buf, int buf_len){
   if (connection_state != 2 || sendto_error == 1) return -1;
 
   //write data to mTCP internal buffer
-  memcpy(&send_buf+send_buf_len, &buf, buf_len);
+  memcpy(&send_buf[send_buf_len], &buf[0], buf_len);
   send_buf_len += buf_len;
 
   //Wake Up Sending Thread
@@ -132,7 +131,7 @@ void mtcp_close(int socket_fd){
 
   //Update Global Variable
   pthread_mutex_lock(&info_mutex);
-  connection_state = 3;
+  to_disconnet = 1;
   pthread_mutex_unlock(&info_mutex);
 
   //Wake Up Sending Thread
@@ -198,25 +197,14 @@ static void *send_thread(void *argp){
           //update info
           pthread_mutex_lock(&info_mutex);
           last_packet_sent = 1;
+          seq = htonl(sequence_number);
           pthread_mutex_unlock(&info_mutex);
 
           //send SYN
           mode = 0;
-          seq = htonl(sequence_number);
           memcpy(&buffer, &seq, 4);
           buffer[0] = buffer[0] | (mode << 4);
 
-          //Debug
-          if (debug == 1) {
-            printf("send SYN\n");
-            printf("%d\n", seq);
-            printf("hashedChars: ");
-            int i;
-            for (i = 0; i < 4; i++) {
-               printf("%x", buffer[i]);
-            }
-            printf("\n");
-          }
 
           if (sendto(socket_fd, buffer, sizeof(buffer), 0, (struct sockaddr *) &server_addr, addrlen) < 0) {
             sendto_error = 1;
@@ -231,25 +219,13 @@ static void *send_thread(void *argp){
           pthread_mutex_lock(&info_mutex);
           last_packet_sent = 2;
           connection_state = 2;
+          seq = htonl(sequence_number);
           pthread_mutex_unlock(&info_mutex);
 
           //send ACK
           mode = 4;
-          seq = htonl(sequence_number);
           memcpy(&buffer, &seq, 4);
           buffer[0] = buffer[0] | (mode << 4);
-
-          //Debug
-          if (debug == 1) {
-            printf("send ACK\n");
-            printf("%d\n", seq);
-            printf("hashedChars: ");
-            int i;
-            for (i = 0; i < 4; i++) {
-               printf("%x", buffer[i]);
-            }
-            printf("\n");
-          }
 
           if (sendto(socket_fd, buffer, sizeof(buffer), 0, (struct sockaddr *) &server_addr, addrlen) < 0) {
             sendto_error = 1;
@@ -264,10 +240,10 @@ static void *send_thread(void *argp){
             pthread_cond_signal(&app_thread_sig);
             pthread_mutex_unlock(&app_thread_sig_mutex);
 
-            //Sleep
-            pthread_mutex_lock(&app_thread_sig_mutex);
-            pthread_cond_wait(&app_thread_sig, &app_thread_sig_mutex);
-            pthread_mutex_unlock(&app_thread_sig_mutex);
+            // //Sleep
+            // pthread_mutex_lock(&app_thread_sig_mutex);
+            // pthread_cond_wait(&app_thread_sig, &app_thread_sig_mutex);
+            // pthread_mutex_unlock(&app_thread_sig_mutex);
           }
         }
         break;
@@ -283,44 +259,38 @@ static void *send_thread(void *argp){
           }
           pthread_mutex_unlock(&info_mutex);
 
-          memcpy(&current_send_buf, &send_buf + send_buf_pointer, current_len_sent);
+          memcpy(&current_send_buf[0], &send_buf[send_buf_pointer], current_len_sent);
 
           //update info
           pthread_mutex_lock(&info_mutex);
           last_packet_sent = 3;
           timeout = 1;
+          seq = htonl(sequence_number);
           pthread_mutex_unlock(&info_mutex);
 
           //Send data
 
           mode = 5;
-          seq = htonl(sequence_number);
           memcpy(&buffer, &seq, 4);
           buffer[0] = buffer[0] | (mode << 4);
           memcpy(&data, &buffer, sizeof(buffer));
           memcpy(&data + 4, &current_send_buf, current_len_sent);
 
-          //Debug
-          if (debug == 1) {
-            printf("send Data\n");
-            printf("%d\n", seq);
-            printf("hashedChars: ");
-            int i;
-            for (i = 0; i < 4; i++) {
-               printf("%x", buffer[i]);
-            }
-            printf("\n");
-          }
 
           if (sendto(socket_fd, data, 4 + current_len_sent, 0, (struct sockaddr *) &server_addr, addrlen) < 0) {
             sendto_error = 1;
           }
 
         } else {
+          pthread_mutex_lock(&info_mutex);
+          if (to_disconnet == 1) {
+            connection_state = 3;
+          }
+          pthread_mutex_unlock(&info_mutex);
           //Sleep
-          pthread_mutex_lock(&app_thread_sig_mutex);
-          pthread_cond_wait(&app_thread_sig, &app_thread_sig_mutex);
-          pthread_mutex_unlock(&app_thread_sig_mutex);
+          // pthread_mutex_lock(&app_thread_sig_mutex);
+          // pthread_cond_wait(&app_thread_sig, &app_thread_sig_mutex);
+          // pthread_mutex_unlock(&app_thread_sig_mutex);
         }
         break;
       case 3:
@@ -328,25 +298,14 @@ static void *send_thread(void *argp){
           //update info
           pthread_mutex_lock(&info_mutex);
           last_packet_sent = 4;
+          seq = htonl(sequence_number);
           pthread_mutex_unlock(&info_mutex);
 
           //Send FIN
           mode = 2;
-          seq = htonl(sequence_number);
           memcpy(&buffer, &seq, 4);
           buffer[0] = buffer[0] | (mode << 4);
 
-          //Debug
-          if (debug == 1) {
-            printf("send FIN\n");
-            printf("%d\n", seq);
-            printf("hashedChars: ");
-            int i;
-            for (i = 0; i < 4; i++) {
-               printf("%x", buffer[i]);
-            }
-            printf("\n");
-          }
 
           if (sendto(socket_fd, buffer, sizeof(buffer), 0, (struct sockaddr *) &server_addr, addrlen) < 0) {
             sendto_error = 1;
@@ -360,25 +319,13 @@ static void *send_thread(void *argp){
           //update info
           pthread_mutex_lock(&info_mutex);
           last_packet_sent = 2;
+          seq = htonl(sequence_number);
           pthread_mutex_unlock(&info_mutex);
 
           //Send ACK
           mode = 4;
-          seq = htonl(sequence_number);
           memcpy(&buffer, &seq, 4);
           buffer[0] = buffer[0] | (mode << 4);
-
-          //Debug
-          if (debug == 1) {
-            printf("send ACK\n");
-            printf("%d\n", seq);
-            printf("hashedChars: ");
-            int i;
-            for (i = 0; i < 4; i++) {
-               printf("%x", buffer[i]);
-            }
-            printf("\n");
-          }
 
           if (sendto(socket_fd, buffer, sizeof(buffer), 0, (struct sockaddr *) &server_addr, addrlen) < 0) {
             sendto_error = 1;
@@ -422,18 +369,7 @@ static void *receive_thread(void *argp){
 
     last_packet_received = mode;
 
-    //Debug
-    if (debug == 1) {
-      printf("receive packet\n");
-      printf("%d\n", rev_seq);
-      printf("%d\n", mode);
-      printf("hashedChars: ");
-      int i;
-      for (i = 0; i < sizeof(buffer); i++) {
-         printf("%x", buffer[i]);
-      }
-      printf("\n");
-    }
+
 
     //Check & update state
     pthread_mutex_lock(&info_mutex);
@@ -447,8 +383,8 @@ static void *receive_thread(void *argp){
           pthread_mutex_unlock(&send_thread_sig_mutex);
         }
         break;
-      case 2:
-        if (last_packet_received == 2 && rev_seq == sequence_number + current_len_sent) {
+      case 2: 
+        if (last_packet_received == 4 && rev_seq == sequence_number + current_len_sent) {
           timeout = 0;
           sequence_number += current_len_sent;
           send_buf_pointer += current_len_sent;
