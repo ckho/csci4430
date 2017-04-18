@@ -28,6 +28,9 @@ static int Callback(struct nfq_q_handle *qh, struct nfgenmsg *msg,
 
   uint16_t dest_port_before_change;
 
+  uint32_t sender_ip_before_change;
+  uint16_t sender_port_before_change;
+
 
   header = nfq_get_msg_packet_hdr(pkt);
 
@@ -85,6 +88,9 @@ static int Callback(struct nfq_q_handle *qh, struct nfgenmsg *msg,
         printf("Record found in translation table.\n");
         //use the previously assigned port number and modifies the IP and TCP headers of the packet accordingly
 
+        sender_ip_before_change = iph->saddr;
+        sender_port_before_change = ntohs(tcph->source);
+
         temp_ip.s_addr = iph->saddr;
         printf("The sender IP address before changed is  %s\n", inet_ntoa(temp_ip));
         printf("The sender port before changed is  %i\n", ntohs(tcph->source));
@@ -106,7 +112,11 @@ static int Callback(struct nfq_q_handle *qh, struct nfgenmsg *msg,
         if ((record->state == 12) && (tcph->ack)) {
           printf("4way handshake by source - second ACK\n");
           record->state = 13;
-          table_delete_outbound(iph->saddr, ntohs(tcph->source));
+          if (table_delete_outbound(sender_ip_before_change, sender_port_before_change) == 1) {
+            printf("Delete successfully.\n");
+          } else {
+            printf("Delete NOT successfully.\n");
+          }
           table_print();
         }
         // 4-way handshake started by destination
@@ -127,7 +137,12 @@ static int Callback(struct nfq_q_handle *qh, struct nfgenmsg *msg,
         // RST
         if (tcph->rst) {
           printf("RST by source\n");
-          table_delete_outbound(iph->saddr, ntohs(tcph->source));
+          printf("Delete by inbound\n");
+          if (table_delete_outbound(sender_ip_before_change, sender_port_before_change) == 1) {
+            printf("Delete successfully.\n");
+          } else {
+            printf("Delete NOT successfully.\n");
+          }
           table_print();
         }
         //forwards it.
@@ -146,6 +161,8 @@ static int Callback(struct nfq_q_handle *qh, struct nfgenmsg *msg,
           // tcph->check = tcp_checksum((unsigned char *)iph);
           // iph->check = ip_checksum((unsigned char *)iph);
 
+          sender_ip_before_change = iph->saddr;
+          sender_port_before_change = ntohs(tcph->source);
 
           temp_ip.s_addr = iph->saddr;
           printf("The sender IP address before changed is  %s\n", inet_ntoa(temp_ip));
@@ -213,9 +230,9 @@ static int Callback(struct nfq_q_handle *qh, struct nfgenmsg *msg,
           printf("4way handshake by dest  - first FIN\n");
           record->state = 20;
         }
-        if ((record->state == 12) && (tcph->ack)) {
+        if ((record->state == 22) && (tcph->ack)) {
           printf("4way handshake by dest  - second ACK\n");
-          record->state = 13;
+          record->state = 23;
           printf("Delete by inbound\n");
           if (table_delete_inbound(dest_port_before_change) == 1) {
             printf("Delete successfully.\n");
